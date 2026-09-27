@@ -1,0 +1,17 @@
+{
+  "name": "whatsapp-baileys-service",
+  "version": "1.0.0",
+  "description": "WhatsApp Web Baileys microservice for QR-based multi-device authentication and messaging",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "node --watch server.js"
+  },
+  "dependencies": {
+    "@whiskeysockets/baileys": "^6.7.18",
+    "cors": "^2.8.5",
+    "express": "^4.19.2",
+    "pino": "^9.1.0",
+    "qrcode": "^1.5.3"
+  }
+}

@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  whatsapp_service:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    image: omnichannel-whatsapp-service:latest
+    container_name: whatsapp_microservice
+    restart: always
+    ports:
+      - "3001:3001"
+    environment:
+      - PORT=3001
+    volumes:
+      - .:/app
+      - /app/node_modules
+      - whatsapp_auth_data:/app/auth_info_baileys
+
+volumes:
+  whatsapp_auth_data:

@@ -275,6 +275,87 @@ app.post('/message/send', async (req, res) => {
   }
 });
 
+// Check WhatsApp number registration
+app.post(['/number/check', '/whatsapp/check-number'], async (req, res) => {
+  const { sessionId, phone, phones } = req.body;
+
+  if (!sessionId || (!phone && (!phones || !phones.length))) {
+    return res.status(400).json({ error: 'sessionId and phone (or phones array) are required.' });
+  }
+
+  let session = sessions.get(sessionId);
+  if (!session && fs.existsSync(path.join(AUTH_DIR, sessionId))) {
+    console.log(`[Baileys Auto-Restore] Attempting to restore session ${sessionId} from disk...`);
+    try {
+      session = await initBaileysSession(sessionId);
+      let waited = 0;
+      while (waited < 50 && session.status !== 'open' && session.status !== 'disconnected') {
+        await delay(100);
+        waited++;
+      }
+    } catch (e) {
+      console.error(`[Baileys Auto-Restore Error] Failed for ${sessionId}:`, e);
+    }
+  }
+
+  if (!session || session.status !== 'open' || !session.sock) {
+    return res.status(400).json({ error: `Session ${sessionId} is not connected or active.` });
+  }
+
+  const phoneList = phones && Array.isArray(phones) ? phones : [phone];
+
+  try {
+    const results = [];
+    for (const rawPhone of phoneList) {
+      if (!rawPhone) continue;
+      const cleanNumber = String(rawPhone).replace(/[^0-9]/g, '');
+      if (!cleanNumber) {
+        results.push({
+          phone: rawPhone,
+          exists: false,
+          error: 'Invalid phone number format'
+        });
+        continue;
+      }
+
+      try {
+        const jid = `${cleanNumber}@s.whatsapp.net`;
+        const checkResults = await session.sock.onWhatsApp(jid);
+        const match = Array.isArray(checkResults) && checkResults.find(r => r.exists);
+        results.push({
+          phone: rawPhone,
+          e164: `+${cleanNumber}`,
+          exists: Boolean(match),
+          jid: match ? match.jid : null
+        });
+      } catch (checkErr) {
+        console.error(`[Baileys Error] Check number failed for ${rawPhone}:`, checkErr);
+        results.push({
+          phone: rawPhone,
+          exists: false,
+          error: checkErr.message
+        });
+      }
+    }
+
+    if (phone && !phones) {
+      const single = results[0] || { phone, exists: false };
+      return res.json({
+        status: 'success',
+        ...single
+      });
+    }
+
+    return res.json({
+      status: 'success',
+      results
+    });
+  } catch (err) {
+    console.error(`[Baileys Error] Check numbers failed for ${sessionId}:`, err);
+    return res.status(500).json({ error: err.message });
+  }
+});
+
 function autoRestoreSessions() {
   if (fs.existsSync(AUTH_DIR)) {
     const entries = fs.readdirSync(AUTH_DIR, { withFileTypes: true });

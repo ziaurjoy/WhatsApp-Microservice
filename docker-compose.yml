@@ -12,10 +12,14 @@ services:
       - "3001:3001"
     environment:
       - PORT=3001
+      - BACKEND_API_URL=${BACKEND_API_URL:-http://host.docker.internal:8000}
+      - WHATSAPP_SERVICE_SECRET=${WHATSAPP_SERVICE_SECRET:-}
     volumes:
       - .:/app
       - /app/node_modules
       - whatsapp_auth_data:/app/auth_info_baileys
+    extra_hosts:
+      - "host.docker.internal:host-gateway"
 
 volumes:
   whatsapp_auth_data:

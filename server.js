@@ -19,6 +19,9 @@ app.use(express.json());
 
 const PORT = process.env.PORT || 3001;
 const AUTH_DIR = path.join(__dirname, 'auth_info_baileys');
+const BACKEND_API_URL = process.env.BACKEND_API_URL || 'http://localhost:8000';
+const WHATSAPP_SERVICE_SECRET = process.env.WHATSAPP_SERVICE_SECRET || '';
+const BACKEND_EVENTS_PATH = '/api/integrations/whatsapp/baileys/events/';
 
 if (!fs.existsSync(AUTH_DIR)) {
   fs.mkdirSync(AUTH_DIR, { recursive: true });
@@ -29,6 +32,51 @@ if (!fs.existsSync(AUTH_DIR)) {
 const sessions = new Map();
 
 const logger = pino({ level: 'warn' });
+
+async function relayBackendEvent(event) {
+  if (!WHATSAPP_SERVICE_SECRET) {
+    throw new Error('WHATSAPP_SERVICE_SECRET is not configured.');
+  }
+
+  let lastError;
+  for (let attempt = 0; attempt < 3; attempt += 1) {
+    try {
+      const response = await fetch(`${BACKEND_API_URL.replace(/\/$/, '')}${BACKEND_EVENTS_PATH}`, {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+          'X-WhatsApp-Service-Secret': WHATSAPP_SERVICE_SECRET,
+        },
+        body: JSON.stringify(event),
+        signal: AbortSignal.timeout(5000),
+      });
+      if (response.ok) return;
+      lastError = new Error(`Backend rejected WhatsApp event (${response.status}).`);
+    } catch (error) {
+      lastError = error;
+    }
+
+    await delay(250 * (attempt + 1));
+  }
+
+  throw lastError;
+}
+
+function extractMessageText(message) {
+  let content = message;
+  while (content?.ephemeralMessage?.message || content?.viewOnceMessage?.message) {
+    content = content.ephemeralMessage?.message || content.viewOnceMessage?.message;
+  }
+
+  if (content?.conversation) return { text: content.conversation, type: 'text' };
+  if (content?.extendedTextMessage?.text) return { text: content.extendedTextMessage.text, type: 'text' };
+  if (content?.imageMessage) return { text: content.imageMessage.caption || '[Image message]', type: 'image' };
+  if (content?.videoMessage) return { text: content.videoMessage.caption || '[Video message]', type: 'video' };
+  if (content?.documentMessage) return { text: content.documentMessage.fileName || '[Document message]', type: 'document' };
+  if (content?.audioMessage) return { text: '[Audio message]', type: 'audio' };
+  if (content?.stickerMessage) return { text: '[Sticker message]', type: 'sticker' };
+  return { text: '[Unsupported message]', type: 'unsupported' };
+}
 
 async function initBaileysSession(sessionId) {
   const sessionAuthPath = path.join(AUTH_DIR, sessionId);
@@ -129,13 +177,49 @@ async function initBaileysSession(sessionId) {
     }
   });
 
-  // Handle incoming messages if needed
   sock.ev.on('messages.upsert', async (m) => {
     if (m.type === 'notify') {
       for (const msg of m.messages) {
-        if (!msg.key.fromMe) {
-          console.log(`[Baileys] Incoming message for session ${sessionId} from ${msg.key.remoteJid}:`, msg.message?.conversation || msg.message?.extendedTextMessage?.text);
+        const remoteJid = msg.key.remoteJid || '';
+        if (msg.key.fromMe || remoteJid.endsWith('@g.us') || remoteJid === 'status@broadcast') continue;
+
+        const rawPhone = remoteJid.split('@')[0].split(':')[0];
+        const digits = rawPhone.replace(/\D/g, '');
+        if (!digits || !msg.key.id) continue;
+
+        const { text, type } = extractMessageText(msg.message);
+        try {
+          await relayBackendEvent({
+            event: 'message',
+            session_id: sessionId,
+            message_id: msg.key.id,
+            remote_jid: remoteJid,
+            phone: `+${digits}`,
+            contact_name: msg.pushName || '',
+            text,
+            message_type: type,
+            timestamp: Number(msg.messageTimestamp) || Date.now() / 1000,
+          });
+        } catch (error) {
+          console.error(`[Baileys] Could not sync message ${msg.key.id} to backend:`, error);
         }
+      }
+    }
+  });
+
+  sock.ev.on('messages.update', async (updates) => {
+    for (const { key, update } of updates) {
+      if (!key?.fromMe || !key.id || update?.status === undefined) continue;
+      try {
+        await relayBackendEvent({
+          event: 'status',
+          session_id: sessionId,
+          message_id: key.id,
+          status: String(update.status),
+          timestamp: Date.now() / 1000,
+        });
+      } catch (error) {
+        console.error(`[Baileys] Could not sync message status ${key.id} to backend:`, error);
       }
     }
   });
@@ -375,4 +459,3 @@ app.listen(PORT, () => {
   console.log(`[Baileys Microservice] WhatsApp service running on http://localhost:${PORT}`);
   autoRestoreSessions();
 });
-
